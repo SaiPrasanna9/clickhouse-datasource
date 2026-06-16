@@ -16,6 +16,7 @@ import {
   getColumnIndexByHint,
   getColumnsByHints,
   isAggregateQuery,
+  JSON_SENTINEL_KEY,
 } from './sqlGenerator';
 
 describe('SQL Generator', () => {
@@ -237,6 +238,137 @@ describe('SQL Generator', () => {
     expect(sql).toEqual(expectedSqlParts.join(' '));
   });
 
+  it('generates trace ID query with JSON-typed tags columns', () => {
+    const opts: QueryBuilderOptions = {
+      database: 'default',
+      table: 'otel_traces',
+      queryType: QueryType.Traces,
+      columns: [
+        { name: 'TraceId', type: 'String', hint: ColumnHint.TraceId },
+        { name: 'SpanId', type: 'String', hint: ColumnHint.TraceSpanId },
+        { name: 'ParentSpanId', type: 'String', hint: ColumnHint.TraceParentSpanId },
+        { name: 'ServiceName', type: 'LowCardinality(String)', hint: ColumnHint.TraceServiceName },
+        { name: 'SpanName', type: 'LowCardinality(String)', hint: ColumnHint.TraceOperationName },
+        { name: 'Timestamp', type: 'DateTime64(9)', hint: ColumnHint.Time },
+        { name: 'Duration', type: 'Int64', hint: ColumnHint.TraceDurationTime },
+        { name: 'SpanAttributes', type: 'JSON', hint: ColumnHint.TraceTags },
+        { name: 'ResourceAttributes', type: 'JSON', hint: ColumnHint.TraceServiceTags },
+      ],
+      filters: [],
+      meta: {
+        minimized: true,
+        otelEnabled: false,
+        traceDurationUnit: TimeUnit.Nanoseconds,
+        isTraceIdMode: true,
+        traceId: 'abcdefg',
+      },
+      limit: 1000,
+      orderBy: [],
+    };
+
+    const sql = generateSql(opts);
+
+    expect(sql).toContain('"SpanAttributes" as tags');
+    expect(sql).toContain('"ResourceAttributes" as serviceTags');
+    expect(sql).not.toContain('JSONAllPaths("SpanAttributes")');
+    expect(sql).not.toContain('JSONAllPaths("ResourceAttributes")');
+    expect(sql).not.toContain('mapKeys("SpanAttributes")');
+    expect(sql).not.toContain('mapKeys("ResourceAttributes")');
+    expect(sql).not.toContain('CAST');
+  });
+
+  it('generates trace ID query with JSON-typed tags and events/links columns, flatten nested disabled', () => {
+    const opts: QueryBuilderOptions = {
+      database: 'default',
+      table: 'otel_traces',
+      queryType: QueryType.Traces,
+      columns: [
+        { name: 'TraceId', type: 'String', hint: ColumnHint.TraceId },
+        { name: 'SpanId', type: 'String', hint: ColumnHint.TraceSpanId },
+        { name: 'ParentSpanId', type: 'String', hint: ColumnHint.TraceParentSpanId },
+        { name: 'ServiceName', type: 'LowCardinality(String)', hint: ColumnHint.TraceServiceName },
+        { name: 'SpanName', type: 'LowCardinality(String)', hint: ColumnHint.TraceOperationName },
+        { name: 'Timestamp', type: 'DateTime64(9)', hint: ColumnHint.Time },
+        { name: 'Duration', type: 'Int64', hint: ColumnHint.TraceDurationTime },
+        { name: 'SpanAttributes', type: 'JSON', hint: ColumnHint.TraceTags },
+        { name: 'ResourceAttributes', type: 'JSON', hint: ColumnHint.TraceServiceTags },
+      ],
+      filters: [],
+      meta: {
+        minimized: true,
+        otelEnabled: true,
+        otelVersion: 'latest',
+        traceDurationUnit: TimeUnit.Nanoseconds,
+        isTraceIdMode: true,
+        traceId: 'abcdefg',
+        flattenNested: false,
+        traceEventsColumnPrefix: 'Events',
+        traceLinksColumnPrefix: 'Links',
+        tagsAreJSON: true,
+      },
+      limit: 1000,
+      orderBy: [],
+    };
+
+    const sql = generateSql(opts);
+
+    expect(sql).toContain('"SpanAttributes" as tags');
+    expect(sql).toContain('"ResourceAttributes" as serviceTags');
+    expect(sql).not.toContain('JSONAllPaths("SpanAttributes")');
+    expect(sql).not.toContain('JSONAllPaths("ResourceAttributes")');
+    // events/links attributes are passed as raw JSON and expanded client-side
+    expect(sql).toContain(`map('key', '${JSON_SENTINEL_KEY}', 'value', toJSONString(attributes))`);
+    expect(sql).not.toContain('mapKeys(attributes)');
+    expect(sql).not.toContain('CAST');
+  });
+
+  it('generates trace ID query with JSON-typed tags and events/links columns, flatten nested enabled', () => {
+    const opts: QueryBuilderOptions = {
+      database: 'default',
+      table: 'otel_traces',
+      queryType: QueryType.Traces,
+      columns: [
+        { name: 'TraceId', type: 'String', hint: ColumnHint.TraceId },
+        { name: 'SpanId', type: 'String', hint: ColumnHint.TraceSpanId },
+        { name: 'ParentSpanId', type: 'String', hint: ColumnHint.TraceParentSpanId },
+        { name: 'ServiceName', type: 'LowCardinality(String)', hint: ColumnHint.TraceServiceName },
+        { name: 'SpanName', type: 'LowCardinality(String)', hint: ColumnHint.TraceOperationName },
+        { name: 'Timestamp', type: 'DateTime64(9)', hint: ColumnHint.Time },
+        { name: 'Duration', type: 'Int64', hint: ColumnHint.TraceDurationTime },
+        { name: 'SpanAttributes', type: 'JSON', hint: ColumnHint.TraceTags },
+        { name: 'ResourceAttributes', type: 'JSON', hint: ColumnHint.TraceServiceTags },
+      ],
+      filters: [],
+      meta: {
+        minimized: true,
+        otelEnabled: true,
+        otelVersion: 'latest',
+        traceDurationUnit: TimeUnit.Nanoseconds,
+        isTraceIdMode: true,
+        traceId: 'abcdefg',
+        flattenNested: true,
+        traceEventsColumnPrefix: 'Events',
+        traceLinksColumnPrefix: 'Links',
+        tagsAreJSON: true,
+      },
+      limit: 1000,
+      orderBy: [],
+    };
+
+    const sql = generateSql(opts);
+
+    expect(sql).toContain('"SpanAttributes" as tags');
+    expect(sql).toContain('"ResourceAttributes" as serviceTags');
+    expect(sql).not.toContain('JSONAllPaths("SpanAttributes")');
+    expect(sql).not.toContain('JSONAllPaths("ResourceAttributes")');
+    // events/links attributes are passed as raw JSON and expanded client-side
+    expect(sql).toContain(`map('key', '${JSON_SENTINEL_KEY}', 'value', toJSONString(event.Attributes))`);
+    expect(sql).toContain(`map('key', '${JSON_SENTINEL_KEY}', 'value', toJSONString(link.Attributes))`);
+    expect(sql).not.toContain('mapKeys(event.Attributes)');
+    expect(sql).not.toContain('mapKeys(link.Attributes)');
+    expect(sql).not.toContain('CAST');
+  });
+
   it('generates trace ID query with additional fields, flatten nested disabled', () => {
     const opts: QueryBuilderOptions = {
       database: 'default',
@@ -286,7 +418,7 @@ describe('SQL Generator', () => {
       `mapKeys("SpanAttributes")) as tags,`,
       `arrayMap(key -> map('key', key, 'value',"ResourceAttributes"[key]), mapKeys("ResourceAttributes")) as serviceTags,`,
       `if("StatusCode" IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) as statusCode,`,
-      `arrayMap((name, timestamp, attributes) -> tuple(name, toString(toUnixTimestamp64Milli(timestamp)), arrayMap( key -> map('key', key, 'value', attributes[key]), mapKeys(attributes)))::Tuple(name String, timestamp String, fields Array(Map(String, String))), "Events".Name, "Events".Timestamp, "Events".Attributes) AS logs,`,
+      `arrayMap((name, timestamp, attributes) -> tuple(name, toString(toUnixTimestamp64Milli(timestamp)), arrayMap(key -> map('key', key, 'value', attributes[key]), mapKeys(attributes)))::Tuple(name String, timestamp String, fields Array(Map(String, String))), "Events".Name, "Events".Timestamp, "Events".Attributes) AS logs,`,
       `arrayMap((traceID, spanID, attributes) -> tuple(traceID, spanID, arrayMap(key -> map('key', key, 'value', attributes[key]), mapKeys(attributes)))::Tuple(traceID String, spanID String, tags Array(Map(String, String))), "Links".TraceId, "Links".SpanId, "Links".Attributes) AS references,`,
       '"Kind" as kind,',
       '"StatusMessage" as statusMessage,',
@@ -480,6 +612,92 @@ describe('SQL Generator', () => {
     };
     const sql = generateSql(opts);
     expect(sql).not.toMatch(/\bLIMIT\b/);
+  });
+
+  it('generates an optimized trace ID query without OTel when a trace timestamp table exists', () => {
+    const opts: QueryBuilderOptions = {
+      database: 'default',
+      table: 'custom_traces',
+      queryType: QueryType.Traces,
+      columns: [
+        { name: 'TraceId', type: 'String', hint: ColumnHint.TraceId },
+        { name: 'SpanId', type: 'String', hint: ColumnHint.TraceSpanId },
+        { name: 'ParentSpanId', type: 'String', hint: ColumnHint.TraceParentSpanId },
+        { name: 'ServiceName', type: 'LowCardinality(String)', hint: ColumnHint.TraceServiceName },
+        { name: 'SpanName', type: 'LowCardinality(String)', hint: ColumnHint.TraceOperationName },
+        { name: 'Timestamp', type: 'DateTime64(9)', hint: ColumnHint.Time },
+        { name: 'Duration', type: 'Int64', hint: ColumnHint.TraceDurationTime },
+        { name: 'SpanAttributes', type: 'Map(LowCardinality(String), String)', hint: ColumnHint.TraceTags },
+        { name: 'ResourceAttributes', type: 'Map(LowCardinality(String), String)', hint: ColumnHint.TraceServiceTags },
+        { name: 'StatusCode', type: 'LowCardinality(String)', hint: ColumnHint.TraceStatusCode },
+      ],
+      filters: [],
+      meta: {
+        minimized: true,
+        otelEnabled: false,
+        otelVersion: undefined,
+        traceDurationUnit: TimeUnit.Nanoseconds,
+        isTraceIdMode: true,
+        traceId: 'abcdefg',
+        hasTraceTimestampTable: true,
+      },
+      limit: 1000,
+      orderBy: [],
+    };
+    const expectedSqlParts = [
+      `WITH 'abcdefg' as trace_id, (SELECT min(Start) FROM "default"."custom_traces_trace_id_ts" WHERE TraceId = trace_id) as trace_start,`,
+      `(SELECT max(End) + 1 FROM "default"."custom_traces_trace_id_ts" WHERE TraceId = trace_id) as trace_end`,
+      'SELECT "TraceId" as traceID, "SpanId" as spanID, "ParentSpanId" as parentSpanID,',
+      '"ServiceName" as serviceName, "SpanName" as operationName, multiply(toUnixTimestamp64Nano("Timestamp"), 0.000001) as startTime,',
+      'multiply("Duration", 0.000001) as duration,',
+      `arrayMap(key -> map('key', key, 'value',"SpanAttributes"[key]),`,
+      `mapKeys("SpanAttributes")) as tags,`,
+      `arrayMap(key -> map('key', key, 'value',"ResourceAttributes"[key]), mapKeys("ResourceAttributes")) as serviceTags,`,
+      `if("StatusCode" IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) as statusCode`,
+      `FROM "default"."custom_traces" WHERE traceID = trace_id AND "Timestamp" >= trace_start AND "Timestamp" <= trace_end`,
+    ];
+
+    const sql = generateSql(opts);
+    expect(sql).toEqual(expectedSqlParts.join(' '));
+  });
+
+  it('honours a configured traceTimestampTableSuffix in the optimized trace ID query', () => {
+    const opts: QueryBuilderOptions = {
+      database: 'default',
+      table: 'custom_traces',
+      queryType: QueryType.Traces,
+      columns: [
+        { name: 'TraceId', type: 'String', hint: ColumnHint.TraceId },
+        { name: 'SpanId', type: 'String', hint: ColumnHint.TraceSpanId },
+        { name: 'ParentSpanId', type: 'String', hint: ColumnHint.TraceParentSpanId },
+        { name: 'ServiceName', type: 'LowCardinality(String)', hint: ColumnHint.TraceServiceName },
+        { name: 'SpanName', type: 'LowCardinality(String)', hint: ColumnHint.TraceOperationName },
+        { name: 'Timestamp', type: 'DateTime64(9)', hint: ColumnHint.Time },
+        { name: 'Duration', type: 'Int64', hint: ColumnHint.TraceDurationTime },
+        { name: 'SpanAttributes', type: 'Map(LowCardinality(String), String)', hint: ColumnHint.TraceTags },
+        { name: 'ResourceAttributes', type: 'Map(LowCardinality(String), String)', hint: ColumnHint.TraceServiceTags },
+        { name: 'StatusCode', type: 'LowCardinality(String)', hint: ColumnHint.TraceStatusCode },
+      ],
+      filters: [],
+      meta: {
+        minimized: true,
+        otelEnabled: false,
+        otelVersion: undefined,
+        traceDurationUnit: TimeUnit.Nanoseconds,
+        isTraceIdMode: true,
+        traceId: 'abcdefg',
+        hasTraceTimestampTable: true,
+        traceTimestampTableSuffix: '_ts_index',
+      },
+      limit: 1000,
+      orderBy: [],
+    };
+    const sql = generateSql(opts);
+
+    expect(sql).toContain('FROM "default"."custom_traces_ts_index"');
+    expect(sql).not.toContain('custom_traces_trace_id_ts');
+    expect(sql).toContain(`WITH 'abcdefg' as trace_id`);
+    expect(sql).toContain('"Timestamp" >= trace_start');
   });
 
   it('generates trace search query', () => {
@@ -960,6 +1178,113 @@ describe('getFilters', () => {
     } as QueryBuilderOptions;
     const sql = _testExports.getFilters(options);
     expect(sql).toEqual(`( NumericAttrs['retry_count'] = 3 )`);
+  });
+
+  it('generates dot-notation SQL for JSON mapKey filter (basic path)', () => {
+    const options = {
+      filters: [
+        {
+          condition: 'AND',
+          filterType: 'custom',
+          key: 'LogAttributes',
+          mapKey: 'request_id',
+          operator: FilterOperator.Equals,
+          type: 'JSON',
+          value: 'abc123',
+        },
+      ],
+    } as QueryBuilderOptions;
+    const sql = _testExports.getFilters(options);
+    expect(sql).toEqual("( LogAttributes.`request_id`::Nullable(String) = 'abc123' )");
+  });
+
+  it('generates dot-notation SQL for JSON mapKey filter (nested path)', () => {
+    const options = {
+      filters: [
+        {
+          condition: 'AND',
+          filterType: 'custom',
+          key: 'SpanAttributes',
+          mapKey: 'http.status_code',
+          operator: FilterOperator.Equals,
+          type: 'JSON',
+          value: '200',
+        },
+      ],
+    } as QueryBuilderOptions;
+    const sql = _testExports.getFilters(options);
+    expect(sql).toEqual("( SpanAttributes.`http`.`status_code`::Nullable(String) = '200' )");
+  });
+
+  it('generates correct IN clause for JSON mapKey filter', () => {
+    const options = {
+      filters: [
+        {
+          condition: 'AND',
+          filterType: 'custom',
+          key: 'LogAttributes',
+          mapKey: 'level',
+          operator: FilterOperator.In,
+          type: 'JSON',
+          value: ['error', 'warn'],
+        },
+      ],
+    } as QueryBuilderOptions;
+    const sql = _testExports.getFilters(options);
+    expect(sql).toEqual("( LogAttributes.`level`::Nullable(String) IN ('error', 'warn') )");
+  });
+
+  it('generates correct NOT IN clause for JSON mapKey filter', () => {
+    const options = {
+      filters: [
+        {
+          condition: 'AND',
+          filterType: 'custom',
+          key: 'LogAttributes',
+          mapKey: 'level',
+          operator: FilterOperator.NotIn,
+          type: 'JSON',
+          value: ['debug', 'trace'],
+        },
+      ],
+    } as QueryBuilderOptions;
+    const sql = _testExports.getFilters(options);
+    expect(sql).toEqual("( LogAttributes.`level`::Nullable(String) NOT IN ('debug', 'trace') )");
+  });
+
+  it('generates LIKE clause for JSON mapKey filter', () => {
+    const options = {
+      filters: [
+        {
+          condition: 'AND',
+          filterType: 'custom',
+          key: 'ResourceAttributes',
+          mapKey: 'service.name',
+          operator: FilterOperator.Like,
+          type: 'JSON',
+          value: 'my-service',
+        },
+      ],
+    } as QueryBuilderOptions;
+    const sql = _testExports.getFilters(options);
+    expect(sql).toEqual("( ResourceAttributes.`service`.`name`::Nullable(String) LIKE '%my-service%' )");
+  });
+
+  it('generates IS NULL clause for JSON mapKey filter', () => {
+    const options = {
+      filters: [
+        {
+          condition: 'AND',
+          filterType: 'custom',
+          key: 'LogAttributes',
+          mapKey: 'user_id',
+          operator: FilterOperator.IsNull,
+          type: 'JSON',
+        },
+      ],
+    } as QueryBuilderOptions;
+    const sql = _testExports.getFilters(options);
+    expect(sql).toEqual('( LogAttributes.`user_id`::Nullable(String) IS NULL )');
   });
 
   it('returns complex filter array', () => {

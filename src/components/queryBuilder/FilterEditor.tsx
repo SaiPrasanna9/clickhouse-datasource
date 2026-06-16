@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { SelectableValue } from '@grafana/data';
-import { Button, HorizontalGroup, InlineFormLabel, Input, MultiSelect, RadioButtonGroup, Select } from '@grafana/ui';
+import { Button, InlineFormLabel, Input, MultiSelect, RadioButtonGroup, Select, Stack } from '@grafana/ui';
 import { Filter, FilterOperator, TableColumn, NullFilter } from 'types/queryBuilder';
 import * as utils from 'components/queryBuilder/utils';
 import labels from 'labels';
 import { styles } from 'styles';
 import { Datasource } from 'data/CHDatasource';
 import useUniqueMapKeys from 'hooks/useUniqueMapKeys';
+import useUniqueJSONPaths from 'hooks/useUniqueJSONPaths';
 
 const boolValues: Array<SelectableValue<boolean>> = [
   { value: true, label: 'True' },
@@ -207,9 +208,19 @@ export const FilterEditor = (props: {
   const isMapType = filter.type.startsWith('Map');
   const isJSONType = filter.type.startsWith('JSON');
   const mapKeys = useUniqueMapKeys(props.datasource, isMapType ? filter.key : '', props.database, props.table);
-  const mapKeyOptions = mapKeys.map((k) => ({ label: k, value: k }));
-  if (filter.mapKey && !mapKeys.includes(filter.mapKey)) {
-    mapKeyOptions.push({ label: filter.mapKey, value: filter.mapKey });
+  const keysColumnName = isJSONType ? props.allColumns.find((c) => c.name === filter.key + 'Keys')?.name : undefined;
+  const jsonPaths = useUniqueJSONPaths(
+    props.datasource,
+    isJSONType ? filter.key : '',
+    props.database,
+    props.table,
+    keysColumnName
+  );
+  const subKeyOptions = isJSONType
+    ? jsonPaths.map((p) => ({ label: p, value: p }))
+    : mapKeys.map((k) => ({ label: k, value: k }));
+  if (filter.mapKey && !subKeyOptions.find((o) => o.value === filter.mapKey)) {
+    subKeyOptions.push({ label: filter.mapKey, value: filter.mapKey });
   }
 
   const getFields = () => {
@@ -260,6 +271,23 @@ export const FilterEditor = (props: {
           FilterOperator.GreaterThanOrEqual,
           FilterOperator.WithInGrafanaTimeRange,
           FilterOperator.OutsideGrafanaTimeRange,
+        ].includes(f.value!)
+      );
+    } else if (isJSONType) {
+      // JSON sub-column values are strings; exclude IsEmpty/IsNotEmpty which are unreliable on JSON paths
+      return filterOperators.filter((f) =>
+        [
+          FilterOperator.IsAnything,
+          FilterOperator.Equals,
+          FilterOperator.NotEquals,
+          FilterOperator.Like,
+          FilterOperator.NotLike,
+          FilterOperator.ILike,
+          FilterOperator.NotILike,
+          FilterOperator.In,
+          FilterOperator.NotIn,
+          FilterOperator.IsNull,
+          FilterOperator.IsNotNull,
         ].includes(f.value!)
       );
     } else {
@@ -364,7 +392,7 @@ export const FilterEditor = (props: {
   };
 
   return (
-    <HorizontalGroup wrap align="flex-start" justify="flex-start">
+    <Stack direction="row" wrap="wrap" alignItems="flex-start" justifyContent="flex-start">
       {index !== 0 && (
         <RadioButtonGroup options={conditions} value={filter.condition} onChange={(e) => onFilterConditionChange(e!)} />
       )}
@@ -385,10 +413,14 @@ export const FilterEditor = (props: {
       {(isMapType || isJSONType) && (
         <Select
           value={filter.mapKey}
-          placeholder={labels.components.FilterEditor.mapKeyPlaceholder}
+          placeholder={
+            isJSONType
+              ? labels.components.FilterEditor.jsonPathPlaceholder
+              : labels.components.FilterEditor.mapKeyPlaceholder
+          }
           width={40}
           className={styles.Common.inlineSelect}
-          options={mapKeyOptions}
+          options={subKeyOptions}
           onChange={(e) => onFilterMapKeyChange(e.value!)}
           allowCustomValue
           menuPlacement={'bottom'}
@@ -412,7 +444,7 @@ export const FilterEditor = (props: {
         onClick={() => removeFilter(index)}
         aria-label="query-builder-filters-remove-button"
       />
-    </HorizontalGroup>
+    </Stack>
   );
 };
 

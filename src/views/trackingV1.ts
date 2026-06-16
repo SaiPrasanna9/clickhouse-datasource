@@ -48,6 +48,7 @@ export const trackClickhouseConfigV1QuerySettings = (props: {
   maxOpenConns?: number;
   connMaxLifetime?: number;
   validateSql?: boolean;
+  enableMapKeysDiscovery?: boolean;
 }) => {
   reportInteraction('clickhouse_config_v1_query_settings', props);
 };
@@ -93,6 +94,7 @@ export const trackClickhouseConfigV1TracesConfig = (props: {
   flattenNested?: boolean;
   traceEventsColumnPrefix?: string;
   traceLinksColumnPrefix?: string;
+  traceTimestampTableSuffix?: string;
 }) => {
   reportInteraction('clickhouse_config_v1_traces_config', props);
 };

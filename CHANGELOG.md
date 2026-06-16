@@ -1,5 +1,53 @@
 # Changelog
 
+## 4.18.0
+
+### Features
+
+- Introduce single-table mode for logs and traces configuration (#1832)
+- Auto-detect log/trace column roles by conventional names (#1791)
+- Add JSON attributes (tags) support (#1866)
+
+### Performance
+
+- Decouple trace ID lookup optimization from OTel mode (#1786)
+
+### Fixes
+
+- Bound Map-key probe to avoid full-column scans in ad-hoc filters (#1885)
+- Open the linked trace when following a span link (#1890)
+- Default trace optimization to true (#1853)
+- Support Map-typed columns in ad-hoc filters (#1793)
+- Support scope variables in the datasource (#1840)
+- Support JSON column filters and JSON-typed trace tags (#1792)
+- Preserve `grafanaDependency` compatibility with Grafana prereleases (#1892)
+- Remove Grafana 13 hard-break call sites (#1861)
+- Trim whitespace from host setting (#1830, #1831)
+- Dependency updates
+
+## 4.17.1
+
+### Fixes
+
+- Dependency updates
+
+## 4.17.0
+
+### Features
+
+- Allow `$__adhocFilters` macro to work with multiple tables (#1757)
+
+### Performance
+
+- Hold a single `*sql.DB` on `SchemaProvider` and dispose it with the instance (#1819)
+
+### Fixes
+
+- Dedupe autocomplete suggestions and dispose Monaco providers on unmount (#1820)
+- Map adhoc regex operators to `REGEXP` instead of `ILIKE` (#1794)
+- Close `*sql.DB` after each schema introspection query (#1818)
+- Dependency updates
+
 ## 4.16.0
 
 ### Features
@@ -46,7 +94,7 @@
 ### Fixes
 
 - Dependency updates
-  
+
 ## 4.14.0
 
 ### Features

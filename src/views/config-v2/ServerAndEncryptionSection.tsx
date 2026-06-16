@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   DataSourcePluginOptionsEditorProps,
   GrafanaTheme2,
   onUpdateDatasourceJsonDataOption,
   onUpdateDatasourceJsonDataOptionChecked,
 } from '@grafana/data';
+import { ValidationAPI } from '../CHConfigEditorHooks';
 import {
   Box,
   CollapsableSection,
@@ -30,10 +31,12 @@ import {
 } from './tracking';
 import { HttpProtocolSettingsSection } from './HttpProtocolSettingsSection';
 
-export interface Props extends DataSourcePluginOptionsEditorProps<CHConfig, CHSecureConfig> {}
+export interface Props extends DataSourcePluginOptionsEditorProps<CHConfig, CHSecureConfig> {
+  validation?: ValidationAPI;
+}
 
 export const ServerAndEncryptionSection = (props: Props) => {
-  const { options, onOptionsChange } = props;
+  const { options, onOptionsChange, validation } = props;
   const { jsonData } = options;
   const labels = allLabels.components.Config.ConfigEditor;
   const defaultPort = jsonData.secure
@@ -55,6 +58,46 @@ export const ServerAndEncryptionSection = (props: Props) => {
   const portDescription = `${labels.serverPort.tooltip} (default for ${protocolLabel}: ${defaultPort})`;
 
   const styles = useStyles2(getStyles);
+
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    // Always clear errors eagerly when the user fills in a field, regardless of
+    // whether the ValidationAPI is available. Whitespace-only is treated as
+    // empty so the user gets a clear field-level error instead of a
+    // confusing connection failure later.
+    if (jsonData.host?.trim()) {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.host;
+        return next;
+      });
+      validation?.clearError('host');
+    }
+    if (jsonData.port) {
+      setFieldErrors((prev) => {
+        const next = { ...prev };
+        delete next.port;
+        return next;
+      });
+      validation?.clearError('port');
+    }
+    if (!validation) {
+      return;
+    }
+    return validation.registerValidation(() => {
+      const errors: Record<string, string> = {};
+      if (!jsonData.host?.trim()) {
+        errors.host = labels.serverAddress.error;
+      }
+      if (!jsonData.port) {
+        errors.port = labels.serverPort.error;
+      }
+      setFieldErrors(errors);
+      Object.entries(errors).forEach(([field, msg]) => validation.setError(field, msg));
+      return Object.keys(errors).length === 0;
+    });
+  }, [jsonData.host, jsonData.port, validation, labels.serverAddress.error, labels.serverPort.error]);
 
   const PROTOCOL_OPTIONS = [
     { label: 'Native', value: Protocol.Native },
@@ -105,7 +148,13 @@ export const ServerAndEncryptionSection = (props: Props) => {
             Grafana docs
           </TextLink>
         </Text>
-        <Field required label={labels.serverAddress.label} style={{ marginTop: '30px' }}>
+        <Field
+          required
+          label={labels.serverAddress.label}
+          style={{ marginTop: '30px' }}
+          invalid={!!fieldErrors.host}
+          error={fieldErrors.host}
+        >
           <Input
             name="host"
             value={jsonData.host || ''}
@@ -114,7 +163,20 @@ export const ServerAndEncryptionSection = (props: Props) => {
             aria-label={labels.serverAddress.label}
             data-testid="clickhouse-v2-config-host-input"
             placeholder={labels.serverAddress.placeholder}
-            onBlur={trackClickhouseConfigV2HostInput}
+            onBlur={(e) => {
+              trackClickhouseConfigV2HostInput();
+              const trimmed = e.currentTarget.value.trim();
+              if (trimmed !== e.currentTarget.value) {
+                onOptionsChange({
+                  ...options,
+                  jsonData: { ...options.jsonData, host: trimmed },
+                });
+              }
+              if (!trimmed) {
+                setFieldErrors((prev) => ({ ...prev, host: labels.serverAddress.error }));
+                validation?.setError('host', labels.serverAddress.error);
+              }
+            }}
           />
         </Field>
         <div className={styles.protocolPortRow}>
@@ -166,7 +228,13 @@ export const ServerAndEncryptionSection = (props: Props) => {
             </Field>
           </div>
           <div className={styles.portSection}>
-            <Field required label={labels.serverPort.label} description={portDescription}>
+            <Field
+              required
+              label={labels.serverPort.label}
+              description={portDescription}
+              invalid={!!fieldErrors.port}
+              error={fieldErrors.port}
+            >
               <Input
                 name="port"
                 type="number"
@@ -176,7 +244,13 @@ export const ServerAndEncryptionSection = (props: Props) => {
                 aria-label={labels.serverPort.label}
                 data-testid="clickhouse-v2-config-port-input"
                 placeholder={labels.serverPort.placeholder}
-                onBlur={(e) => trackClickhouseConfigV2PortInput({ port: e.currentTarget.value })}
+                onBlur={(e) => {
+                  trackClickhouseConfigV2PortInput({ port: e.currentTarget.value });
+                  if (!e.currentTarget.value) {
+                    setFieldErrors((prev) => ({ ...prev, port: labels.serverPort.error }));
+                    validation?.setError('port', labels.serverPort.error);
+                  }
+                }}
               />
             </Field>
           </div>

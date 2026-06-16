@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -17,7 +18,6 @@ import (
 	"github.com/grafana/clickhouse-datasource/pkg/converters"
 	"github.com/grafana/clickhouse-datasource/pkg/macros"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	sdkproxy "github.com/grafana/grafana-plugin-sdk-go/backend/proxy"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/tracing"
 	"github.com/grafana/grafana-plugin-sdk-go/build/buildinfo"
@@ -25,7 +25,6 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 	schemas "github.com/grafana/schemads"
 	"github.com/grafana/sqlds/v5"
-	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/proxy"
@@ -142,6 +141,12 @@ func CheckMinServerVersion(conn *sql.DB, major, minor, patch uint64) (bool, erro
 	return true, nil
 }
 
+func wrapCategorizedConnectionError(err error) error {
+	category := CategorizeConnectionError(err)
+	backend.Logger.Error("failed to create ClickHouse client", "error_category", string(category))
+	return backend.DownstreamError(fmt.Errorf("[%s] %w", category, err))
+}
+
 // Connect opens a sql.DB connection using datasource settings
 func (h *Clickhouse) Connect(
 	ctx context.Context,
@@ -156,14 +161,14 @@ func (h *Clickhouse) Connect(
 
 	settings, err := LoadSettings(ctx, config)
 	if err != nil {
-		return nil, err
+		return nil, wrapCategorizedConnectionError(err)
 	}
 
 	var tlsConfig *tls.Config
 	if settings.TlsAuthWithCACert || settings.TlsClientAuth {
 		tlsConfig, err = getTLSConfig(settings)
 		if err != nil {
-			return nil, err
+			return nil, wrapCategorizedConnectionError(err)
 		}
 	} else if settings.Secure {
 		tlsConfig = &tls.Config{
@@ -173,11 +178,11 @@ func (h *Clickhouse) Connect(
 
 	t, err := strconv.Atoi(settings.DialTimeout)
 	if err != nil {
-		return nil, backend.DownstreamError(errors.New(fmt.Sprintf("invalid timeout: %s", settings.DialTimeout)))
+		return nil, backend.DownstreamError(fmt.Errorf("invalid timeout: %s", settings.DialTimeout))
 	}
 	qt, err := strconv.Atoi(settings.QueryTimeout)
 	if err != nil {
-		return nil, backend.DownstreamError(errors.New(fmt.Sprintf("invalid query timeout: %s", settings.QueryTimeout)))
+		return nil, backend.DownstreamError(fmt.Errorf("invalid query timeout: %s", settings.QueryTimeout))
 	}
 
 	protocol := clickhouse.Native
@@ -267,24 +272,22 @@ func (h *Clickhouse) Connect(
 
 	// `sqlds` normally calls `db.PingContext()` to check if the connection is alive,
 	// however, as ClickHouse returns its own non-standard `Exception` type, we need
-	// to handle it here so that we can log the error code, message and stack trace
+	// to handle it here so that we can categorize and surface the error correctly.
 	if err := db.PingContext(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("the operation was cancelled during execution: %w", ctx.Err())
 		}
 
-		if exception, ok := err.(*clickhouse.Exception); ok {
-			log.DefaultLogger.Error("[%d] %s \n%s\n", exception.Code, exception.Message, exception.StackTrace)
-		} else {
-			log.DefaultLogger.Error(err.Error())
-		}
-
-		backend.Logger.Error("failed to create ClickHouse client")
-		backend.Logger.Debug("clickhouse client creation error", "error", err)
-		return nil, backend.DownstreamError(fmt.Errorf("failed to create ClickHouse client"))
+		return nil, wrapCategorizedConnectionError(err)
 	}
 
-	return db, settings.isValid()
+	// Honor the (nil-resource-on-error) contract so callers can rely on
+	// `if err != nil { return err }` without leaking the *sql.DB.
+	if err := settings.isValid(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 // Converters defines list of data type converters
@@ -701,20 +704,20 @@ func extractForwardedHeadersFromMessage(message json.RawMessage) (map[string]str
 	err := json.Unmarshal(message, &messageArgs)
 	if err != nil {
 		backend.Logger.Warn(fmt.Sprintf("Failed to apply headers: %s", err.Error()))
-		return nil, errors.New("Couldn't parse message as args")
+		return nil, errors.New("couldn't parse message as args")
 	}
 
 	httpHeaders := make(map[string]string)
 	if grafanaHttpHeaders, ok := messageArgs[sqlds.HeaderKey]; ok {
 		fwdHeaders, ok := grafanaHttpHeaders.(map[string]interface{})
 		if !ok {
-			return nil, errors.New("Couldn't parse grafana HTTP headers")
+			return nil, errors.New("couldn't parse grafana HTTP headers")
 		}
 
 		for k, v := range fwdHeaders {
 			anyHeadersArr, ok := v.([]interface{})
 			if !ok {
-				return nil, errors.New(fmt.Sprintf("Couldn't parse header %s as an array", k))
+				return nil, fmt.Errorf("couldn't parse header %s as an array", k)
 			}
 
 			strHeadersArr := make([]string, len(anyHeadersArr))

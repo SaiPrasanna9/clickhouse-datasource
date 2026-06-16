@@ -32,6 +32,7 @@ function defaultTraceConfigProps(): TraceConfigProps {
     onEventsColumnPrefixChange: () => {},
     onLinksColumnPrefixChange: () => {},
     onShowTraceLinksChange: () => {},
+    onTraceTimestampTableSuffixChange: () => {},
   };
 }
 
@@ -417,6 +418,24 @@ describe('TracesConfig', () => {
     expect(onLinksColumnPrefixChange).toHaveBeenCalledWith('changed');
   });
 
+  it('should call onTraceTimestampTableSuffixChange when changed', () => {
+    const onTraceTimestampTableSuffixChange = jest.fn();
+    const result = render(
+      <TracesConfig
+        {...defaultTraceConfigProps()}
+        onTraceTimestampTableSuffixChange={onTraceTimestampTableSuffixChange}
+      />
+    );
+    expect(result.container.firstChild).not.toBeNull();
+
+    const input = result.getByPlaceholderText('_trace_id_ts');
+    expect(input).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '_ts_index' } });
+    fireEvent.blur(input);
+    expect(onTraceTimestampTableSuffixChange).toHaveBeenCalledTimes(1);
+    expect(onTraceTimestampTableSuffixChange).toHaveBeenCalledWith('_ts_index');
+  });
+
   it('should call onShowTraceLinksChange when toggled', async () => {
     const onShowTraceLinksChange = jest.fn();
     const result = render(
@@ -424,7 +443,7 @@ describe('TracesConfig', () => {
     );
     expect(result.container.firstChild).not.toBeNull();
 
-    // showTraceLinks is the 2nd role="switch" (index 1), after flattenNested
+    // showTraceLinks is the 2nd role="switch" (index 1): flattenNested, showTraceLinks
     const switches = await result.findAllByRole('switch');
     const input = switches[1];
     expect(input).toBeInTheDocument();

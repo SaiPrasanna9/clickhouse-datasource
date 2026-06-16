@@ -148,19 +148,39 @@ const generateTraceIdQuery = (options: QueryBuilderOptions): string => {
     selectParts.push(getTraceDurationSelectSql(escapeIdentifier(traceDurationTime.name), timeUnit));
   }
 
-  // TODO: for tags and serviceTags, consider the column type. They might not require mapping, they could already be JSON.
   const traceTags = getColumnByHint(options, ColumnHint.TraceTags);
+  const traceServiceTags = getColumnByHint(options, ColumnHint.TraceServiceTags);
+
+  // Use only the column type to determine JSON mode. Both buildOtelColumns (in
+  // traceQueryBuilderHooks.ts) and stampJsonColumnTypes (in utils.ts) stamp the
+  // correct type:'JSON' on these columns before generateSql is called, so the
+  // column type is authoritative. meta.tagsAreJSON is not consulted here to avoid
+  // stale saved values from a prior JSON-schema table influencing SQL generation
+  // when the datasource is later pointed at a Map-typed table.
+  const traceTagsIsJSON = traceTags?.type?.toLowerCase().startsWith('json') === true;
+  const traceServiceTagsIsJSON = traceServiceTags?.type?.toLowerCase().startsWith('json') === true;
+  // Combined flag for events/links — the ClickHouse 26+ OTel schema migrates all attribute columns
+  // together, so either top-level column being JSON implies all attribute columns are JSON.
+  const tagsAreJSON = traceTagsIsJSON || traceServiceTagsIsJSON;
+
+  // JSON-type tags/serviceTags: return the column as-is; client-side flattenJsonTags
+  // handles the {key,value} conversion (cheaper than SQL reconstruction, more compact wire).
   if (traceTags !== undefined) {
-    selectParts.push(
-      `arrayMap(key -> map('key', key, 'value',${escapeIdentifier(traceTags.name)}[key]), mapKeys(${escapeIdentifier(traceTags.name)})) as tags`
-    );
+    const col = escapeIdentifier(traceTags.name);
+    if (traceTagsIsJSON) {
+      selectParts.push(`${col} as tags`);
+    } else {
+      selectParts.push(`arrayMap(key -> map('key', key, 'value',${col}[key]), mapKeys(${col})) as tags`);
+    }
   }
 
-  const traceServiceTags = getColumnByHint(options, ColumnHint.TraceServiceTags);
   if (traceServiceTags !== undefined) {
-    selectParts.push(
-      `arrayMap(key -> map('key', key, 'value',${escapeIdentifier(traceServiceTags.name)}[key]), mapKeys(${escapeIdentifier(traceServiceTags.name)})) as serviceTags`
-    );
+    const col = escapeIdentifier(traceServiceTags.name);
+    if (traceServiceTagsIsJSON) {
+      selectParts.push(`${col} as serviceTags`);
+    } else {
+      selectParts.push(`arrayMap(key -> map('key', key, 'value',${col}[key]), mapKeys(${col})) as serviceTags`);
+    }
   }
 
   const traceStatusCode = getColumnByHint(options, ColumnHint.TraceStatusCode);
@@ -171,6 +191,15 @@ const generateTraceIdQuery = (options: QueryBuilderOptions): string => {
   }
 
   const flattenNested = Boolean(options.meta?.flattenNested);
+  // Events/links attributes must be Array(Map(String,String)) in the typed tuple cast so
+  // the conversion must happen in SQL. JSONExtractKeysAndValuesRaw returns all key-value
+  // pairs from a JSON string as Array(Tuple(String,String)); values are raw JSON literals
+  // (strings are quoted, numbers/booleans are not). replaceRegexpOne strips the surrounding
+  // quotes from string values so every value lands as a plain string.
+  const jsonAttrsToFields = (expr: string): string =>
+    `[map('key', '${JSON_SENTINEL_KEY}', 'value', toJSONString(${expr}))]`;
+  const attrsToFields = (expr: string) =>
+    tagsAreJSON ? jsonAttrsToFields(expr) : `arrayMap(key -> map('key', key, 'value', ${expr}[key]), mapKeys(${expr}))`;
 
   const traceEventsPrefix = options.meta?.traceEventsColumnPrefix || '';
   if (traceEventsPrefix !== '') {
@@ -178,8 +207,7 @@ const generateTraceIdQuery = (options: QueryBuilderOptions): string => {
       selectParts.push(
         [
           `arrayMap(event -> tuple(multiply(toFloat64(event.Timestamp), 1000),`,
-          `arrayConcat(arrayMap(key -> map('key', key, 'value', event.Attributes[key]),`,
-          `mapKeys(event.Attributes)), [map('key', 'message', 'value', event.Name)]))::Tuple(timestamp Float64, fields Array(Map(String, String))),`,
+          `arrayConcat(${attrsToFields('event.Attributes')}, [map('key', 'message', 'value', event.Name)]))::Tuple(timestamp Float64, fields Array(Map(String, String))),`,
           `${escapeIdentifier(traceEventsPrefix)}) as logs`,
         ].join(' ')
       );
@@ -187,8 +215,7 @@ const generateTraceIdQuery = (options: QueryBuilderOptions): string => {
       selectParts.push(
         [
           `arrayMap((name, timestamp, attributes) -> tuple(name, toString(toUnixTimestamp64Milli(timestamp)),`,
-          `arrayMap( key -> map('key', key, 'value', attributes[key]),`,
-          `mapKeys(attributes)))::Tuple(name String, timestamp String, fields Array(Map(String, String))),`,
+          `${attrsToFields('attributes')})::Tuple(name String, timestamp String, fields Array(Map(String, String))),`,
           `${escapeIdentifier(traceEventsPrefix)}.Name, ${escapeIdentifier(traceEventsPrefix)}.Timestamp,`,
           `${escapeIdentifier(traceEventsPrefix)}.Attributes) AS logs`,
         ].join(' ')
@@ -201,16 +228,14 @@ const generateTraceIdQuery = (options: QueryBuilderOptions): string => {
     if (flattenNested) {
       selectParts.push(
         [
-          `arrayMap(link -> tuple(link.TraceId, link.SpanId, arrayMap(key -> map('key', key, 'value', link.Attributes[key]),`,
-          `mapKeys(link.Attributes)))::Tuple(traceID String, spanID String, tags Array(Map(String, String))),`,
+          `arrayMap(link -> tuple(link.TraceId, link.SpanId, ${attrsToFields('link.Attributes')})::Tuple(traceID String, spanID String, tags Array(Map(String, String))),`,
           `${escapeIdentifier(traceLinksPrefix)}) AS references`,
         ].join(' ')
       );
     } else {
       selectParts.push(
         [
-          `arrayMap((traceID, spanID, attributes) -> tuple(traceID, spanID, arrayMap(key -> map('key', key, 'value', attributes[key]),`,
-          `mapKeys(attributes)))::Tuple(traceID String, spanID String, tags Array(Map(String, String))),`,
+          `arrayMap((traceID, spanID, attributes) -> tuple(traceID, spanID, ${attrsToFields('attributes')})::Tuple(traceID String, spanID String, tags Array(Map(String, String))),`,
           `${escapeIdentifier(traceLinksPrefix)}.TraceId, ${escapeIdentifier(traceLinksPrefix)}.SpanId,`,
           `${escapeIdentifier(traceLinksPrefix)}.Attributes) AS references`,
         ].join(' ')
@@ -245,21 +270,19 @@ const generateTraceIdQuery = (options: QueryBuilderOptions): string => {
 
   const selectPartsSql = selectParts.join(', ');
 
-  // Optimize trace ID filtering for OTel enabled trace lookups
+  // Optimize trace ID filtering when a companion timestamp index table is available.
+  // The optimization is gated purely on that capability — OTel is not required, so
+  // any schema following the `<table>_trace_id_ts` convention (or a user-configured
+  // suffix) benefits from the narrowed time range.
   const hasTraceTimestampTable = options.meta?.hasTraceTimestampTable;
   const hasTraceIdFilter = options.meta?.isTraceIdMode && options.meta?.traceId;
-  const otelVersion = otel.getVersion(options.meta?.otelVersion);
-  const applyTraceIdOptimization =
-    hasTraceTimestampTable &&
-    hasTraceIdFilter &&
-    traceStartTime !== undefined &&
-    options.meta?.otelEnabled &&
-    otelVersion;
+  const applyTraceIdOptimization = hasTraceTimestampTable && hasTraceIdFilter && traceStartTime !== undefined;
   if (applyTraceIdOptimization) {
-    const traceId = options.meta!.traceId;
-    const timestampTable = getTableIdentifier(database, table + otel.traceTimestampTableSuffix);
+    const traceIdValue = options.meta!.traceId;
+    const suffix = options.meta?.traceTimestampTableSuffix || otel.traceTimestampTableSuffix;
+    const timestampTable = getTableIdentifier(database, table + suffix);
     queryParts.push('WITH');
-    queryParts.push(`'${traceId}' as trace_id,`);
+    queryParts.push(`'${traceIdValue}' as trace_id,`);
     queryParts.push(`(SELECT min(Start) FROM ${timestampTable} WHERE TraceId = trace_id) as trace_start,`);
     queryParts.push(`(SELECT max(End) + 1 FROM ${timestampTable} WHERE TraceId = trace_id) as trace_end`);
   }
@@ -433,7 +456,9 @@ const generateSimpleTimeSeriesQuery = (_options: QueryBuilderOptions): string =>
     selectNames.add(timeColumn.alias);
   }
 
-  const columnsExcludingTimeColumn = options.columns?.filter((c) => c.hint !== ColumnHint.Time && c.hint !== ColumnHint.FilterTime);
+  const columnsExcludingTimeColumn = options.columns?.filter(
+    (c) => c.hint !== ColumnHint.Time && c.hint !== ColumnHint.FilterTime
+  );
   columnsExcludingTimeColumn?.forEach((c) => {
     selectParts.push(getColumnIdentifier(c));
     selectNames.add(c.alias || c.name);
@@ -676,9 +701,19 @@ const getTableIdentifier = (database: string, table: string): string => {
   return `${escapeIdentifier(database)}${sep}${escapeIdentifier(table)}`;
 };
 
-const escapeIdentifier = (id: string): string => {
-  return id ? `"${id}"` : '';
+export const escapeIdentifier = (id: string): string => {
+  return id ? `"${id.replace(/"/g, '""')}"` : '';
 };
+
+/**
+ * Sentinel Map key used to carry a raw JSON blob through the typed
+ * Array(Map(String,String)) tuple cast in events/links SQL. Chosen to be
+ * distinct from any valid OTel attribute key (OTel keys follow the pattern
+ * [a-z_][0-9a-z_\-.*]* and never start with double-underscores).
+ * Client-side expandJsonSentinel in utils.ts recognizes this key and
+ * replaces the entry with the flattened key-value pairs from the JSON blob.
+ */
+export const JSON_SENTINEL_KEY = '__ch_json__';
 
 const escapeValue = (value: string): string => {
   if (value.includes('$') || value.includes('(') || value.includes(')') || value.includes("'") || value.includes('"')) {
@@ -849,7 +884,13 @@ const getFilters = (options: QueryBuilderOptions): string => {
         .split('.')
         .map((p) => `\`${p}\``)
         .join('.');
-      column += `.${escapedJSONPaths}`;
+      // JSON path extraction returns Dynamic, which ClickHouse's `IN` / `NOT IN` reject
+      // with ILLEGAL_TYPE_OF_ARGUMENT. Cast to Nullable(String) so every filter operator
+      // works — `IS NULL` still detects missing keys (a plain ::String cast would swallow
+      // that signal), and `=` / `!=` / `LIKE` are unaffected.
+      column = `${column}.${escapedJSONPaths}::Nullable(String)`;
+      // Update type so filter value generation routes through the string-aware branches.
+      type = 'String';
     }
 
     filterParts.push(column);

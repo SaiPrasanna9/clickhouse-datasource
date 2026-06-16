@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { QueryEditorProps } from '@grafana/data';
 import { Datasource } from 'data/CHDatasource';
 import { EditorTypeSwitcher } from 'components/queryBuilder/EditorTypeSwitcher';
@@ -13,8 +13,7 @@ import { isBuilderOptionsRunnable, mapQueryBuilderOptionsToGrafanaFormat } from 
 import { setAllOptions, setOptions, useBuilderOptionsState } from 'hooks/useBuilderOptionsState';
 import { pluginVersion } from 'utils/version';
 import { migrateCHQuery } from 'data/migration';
-import useTables from 'hooks/useTables';
-import otel from 'otel';
+import useHasTraceTimestampTable from 'hooks/useHasTraceTimestampTable';
 
 export type CHQueryEditorProps = QueryEditorProps<Datasource, CHQuery, CHConfig>;
 
@@ -67,19 +66,18 @@ const CHEditorByType = (props: CHQueryEditorProps) => {
     shouldSkipChanges.current = false;
   }
 
-  // Resolve hasTraceTimestampTable for OTel trace ID queries.
-  // This runs at the CHEditorByType level (not inside TraceQueryBuilder)
-  // so it works even when the builder is minimized via deep-links.
-  const needsTraceTableCheck = Boolean(builderOptions.meta?.isTraceIdMode && builderOptions.meta?.otelEnabled);
-  const traceDb = needsTraceTableCheck ? builderOptions.database : '';
-  const traceTables = useTables(props.datasource, traceDb);
-  const hasTraceTimestampTable = useMemo(
-    () => traceTables.some((t) => t === builderOptions.table + otel.traceTimestampTableSuffix),
-    [builderOptions.table, traceTables]
+  // Resolve hasTraceTimestampTable for any trace ID query — not only OTel ones.
+  // Running this at the CHEditorByType level means the check fires even when
+  // the builder is minimized via a logs→trace deep-link.
+  const needsTraceTableCheck = Boolean(builderOptions.meta?.isTraceIdMode);
+  const hasTraceTimestampTable = useHasTraceTimestampTable(
+    props.datasource,
+    needsTraceTableCheck ? builderOptions.database || '' : '',
+    needsTraceTableCheck ? builderOptions.table || '' : ''
   );
 
   useEffect(() => {
-    if (!needsTraceTableCheck || traceTables.length === 0) {
+    if (!needsTraceTableCheck) {
       return;
     }
 
@@ -92,7 +90,6 @@ const CHEditorByType = (props: CHQueryEditorProps) => {
     }
   }, [
     needsTraceTableCheck,
-    traceTables,
     hasTraceTimestampTable,
     builderOptions.meta?.hasTraceTimestampTable,
     builderOptionsDispatch,

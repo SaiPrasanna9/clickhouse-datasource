@@ -2,6 +2,16 @@ import { DataSourceJsonData, KeyValue } from '@grafana/data';
 import otel, { defaultLogsTable, defaultTraceTable } from 'otel';
 import { TimeUnit } from './queryBuilder';
 
+export type SignalType = 'logs' | 'traces';
+
+/**
+ * Configuration mode controls the datasource UI layout:
+ * - 'classic': Full access to all databases/tables.
+ * - 'single-table': Focused on one table. The user picks a signal type
+ *   and configures the schema inline.
+ */
+export type ConfigMode = 'classic' | 'single-table';
+
 export interface CHConfig extends DataSourceJsonData {
   /**
    * The version of the plugin this config was saved with
@@ -44,7 +54,28 @@ export interface CHConfig extends DataSourceJsonData {
 
   hideTableNameInAdhocFilters?: boolean;
 
+  /**
+   * Controls the Map-column key discovery probe that populates the filter-key
+   * dropdown for `Map(...)` columns. The probe issues
+   * `SELECT DISTINCT arrayJoin(col.keys) FROM db.table LIMIT 1000` and can be
+   * expensive on large tables when the map has high key cardinality. Defaults
+   * to true to preserve existing UX; operators on large OTel logs/traces tables
+   * may want to disable it. See issue #1843.
+   */
+  enableMapKeysDiscovery?: boolean;
+
   pdcInjected?: boolean;
+
+  /**
+   * Configuration mode: 'classic' (all databases) or 'single-table' (focused).
+   * Defaults to 'classic' when unset.
+   */
+  configMode?: ConfigMode;
+
+  /**
+   * Signal type for single-table mode. Declares what the configured table contains.
+   */
+  signalType?: SignalType;
 }
 
 interface CHSecureConfigProperties {
@@ -112,6 +143,14 @@ export interface CHTracesConfig {
   traceEventsColumnPrefix?: string;
   traceLinksColumnPrefix?: string;
   showTraceLinks?: boolean;
+
+  /**
+   * Suffix appended to the traces table name to locate a companion trace-timestamp
+   * index table (e.g. `<table>_trace_id_ts`). When such a table exists, trace ID
+   * queries run a two-step lookup that narrows the main query's time range,
+   * avoiding a full scan. Defaults to `_trace_id_ts` (the OTel convention).
+   */
+  traceTimestampTableSuffix?: string;
 }
 
 export interface AliasTableEntry {

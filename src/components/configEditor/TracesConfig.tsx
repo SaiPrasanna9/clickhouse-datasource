@@ -3,16 +3,17 @@ import { ConfigSection, ConfigSubSection } from 'components/experimental/ConfigS
 import { Input, Field } from '@grafana/ui';
 import { OtelVersionSelect } from 'components/queryBuilder/OtelVersionSelect';
 import { ColumnHint, TimeUnit } from 'types/queryBuilder';
-import otel from 'otel';
+import otel, { traceTimestampTableSuffix as defaultTraceTimestampTableSuffix } from 'otel';
 import { LabeledInput } from './LabeledInput';
 import { DurationUnitSelect } from 'components/queryBuilder/DurationUnitSelect';
-import { CHTracesConfig, defaultCHAdditionalSettingsConfig } from 'types/config';
+import { CHTracesConfig, ConfigMode, defaultCHAdditionalSettingsConfig } from 'types/config';
 import allLabels from 'labels';
 import { columnLabelToPlaceholder } from 'data/utils';
 import { Switch } from 'components/queryBuilder/Switch';
 
 export interface TraceConfigProps {
   tracesConfig?: CHTracesConfig;
+  variant?: ConfigMode;
   onDefaultDatabaseChange: (v: string) => void;
   onDefaultTableChange: (v: string) => void;
   onOtelEnabledChange: (v: boolean) => void;
@@ -37,6 +38,7 @@ export interface TraceConfigProps {
   onEventsColumnPrefixChange: (v: string) => void;
   onLinksColumnPrefixChange: (v: string) => void;
   onShowTraceLinksChange: (v: boolean) => void;
+  onTraceTimestampTableSuffixChange: (v: string) => void;
 }
 
 export const TracesConfig = (props: TraceConfigProps) => {
@@ -65,6 +67,7 @@ export const TracesConfig = (props: TraceConfigProps) => {
     onEventsColumnPrefixChange,
     onLinksColumnPrefixChange,
     onShowTraceLinksChange,
+    onTraceTimestampTableSuffixChange,
   } = props;
   let {
     defaultDatabase,
@@ -91,8 +94,10 @@ export const TracesConfig = (props: TraceConfigProps) => {
     traceEventsColumnPrefix,
     traceLinksColumnPrefix,
     showTraceLinks,
+    traceTimestampTableSuffix,
   } = (props.tracesConfig || {}) as CHTracesConfig;
   const labels = allLabels.components.Config.TracesConfig;
+  const sectionLabels = props.variant === 'single-table' ? labels.variants.singleTable : labels;
 
   const otelConfig = otel.getVersion(otelVersion);
   if (otelEnabled && otelConfig) {
@@ -118,7 +123,7 @@ export const TracesConfig = (props: TraceConfigProps) => {
   }
 
   return (
-    <ConfigSection title={labels.title} description={labels.description}>
+    <ConfigSection title={sectionLabels.title} description={sectionLabels.description}>
       <div id="traces-config" />
       <Field label={labels.defaultDatabase.label} description={labels.defaultDatabase.description}>
         <Input
@@ -299,8 +304,15 @@ export const TracesConfig = (props: TraceConfigProps) => {
           value={traceLinksColumnPrefix || ''}
           onChange={onLinksColumnPrefixChange}
         />
+        <LabeledInput
+          label={labels.columns.traceTimestampTableSuffix.label}
+          placeholder={defaultTraceTimestampTableSuffix}
+          tooltip={labels.columns.traceTimestampTableSuffix.tooltip}
+          value={traceTimestampTableSuffix || ''}
+          onChange={onTraceTimestampTableSuffixChange}
+        />
       </ConfigSubSection>
-      <br/>
+      <br />
       <ConfigSubSection title={labels.traceIdCorrelation.title} description={labels.traceIdCorrelation.description}>
         <Switch
           label={labels.traceIdCorrelation.showTraceLinks.label}
